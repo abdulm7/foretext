@@ -21,23 +21,17 @@ const peerConnection = new RTCPeerConnection(servers);
 let localStream = null;
 let remoteStream = null;
 
-// Create offer and save to Firestore
-export async function createOffer(): Promise<string> {
-  const roomRef = doc(collection(db, "rooms"));
-  const roomId = roomRef.id;
+// Print doc helper
+export async function printDoc(roomId: string) {
+  const roomRef = doc(db, "rooms", roomId);
+  const roomSnapshot = await getDoc(roomRef);
   
-
-  peerConnection.onicecandidate = (event) => {
-    if (event.candidate) {
-      // TO DO: Save candidate to Firestore
-    }
-  };
-
-  const offer = { type: "offer", sdp: "offer-sdp-data" }; // Placeholder
-
-  await setDoc(roomRef, { offer });
-
-  return roomId;
+  console.log("Room ID:", roomId);
+  if (roomSnapshot.exists()) {
+    console.log("Room data:", roomSnapshot.data());
+  } else {
+    console.log("No such room!");
+  }
 }
 
 // Get offer from Firestore
@@ -46,17 +40,78 @@ export async function getOffer(roomId: string) {
   const roomSnapshot = await getDoc(roomRef);
 
   if (!roomSnapshot.exists()) {
-    throw new Error("Room does not exist");
+    console.log(`Room ${roomId} does not exist. Creating a room and offer...`);
+    await createOffer(roomId);
+
+    const newRoomSnapshot = await getDoc(roomRef);
+    const newOffer = newRoomSnapshot.data()?.offer;
+    if (!newOffer) {
+      throw new Error("Failed to create or retrieve the offer.");
+    }
+
+    return newOffer;
   }
 
-  return roomSnapshot.data().offer;
+  const roomData = roomSnapshot.data();
+  if (!roomData?.offer) {
+    console.log(`Room ${roomId} exists but no offer found. Creating an offer...`);
+    await createOffer(roomId);
+
+    const updatedRoomSnapshot = await getDoc(roomRef);
+    const updatedOffer = updatedRoomSnapshot.data()?.offer;
+    if (!updatedOffer) {
+      throw new Error("Failed to create or retrieve the offer.");
+    }
+
+    return updatedOffer;
+  }
+
+  console.log(`Room ${roomId} exists with an offer. Creating an answer...`);
+  await createAnswer(roomId);
+
+  return roomData.offer;
+}
+
+// Create offer and save to Firestore
+export async function createOffer(roomId: string) {
+  const roomRef = doc(db, "rooms", roomId);
+
+  peerConnection.onicecandidate = async (event) => {
+    if (event.candidate) {
+      const candidateRef = collection(roomRef, "creatorCandidates");
+      await setDoc(doc(candidateRef), event.candidate.toJSON());
+    }
+  };
+
+  const offerDescription = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(offerDescription);
+
+  const offer = {
+    sdp: offerDescription.sdp,
+    type: offerDescription.type,
+  };
+
+  await setDoc(roomRef, { offer });
 }
 
 // Create and save answer to Firestore
 export async function createAnswer(roomId: string) {
-  const answer = { type: "answer", sdp: "answer-sdp-data" }; // Placeholder
-
   const roomRef = doc(db, "rooms", roomId);
+
+  peerConnection.onicecandidate = async (event) => {
+    if (event.candidate) {
+      const candidateRef = collection(roomRef, "answerCandidates");
+      await setDoc(doc(candidateRef), event.candidate.toJSON());
+    }
+  };
+  const answerDescription = await peerConnection.createAnswer();
+  await peerConnection.setLocalDescription(answerDescription);
+  
+  const answer = {
+    type: answerDescription.type,
+    sdp: answerDescription.sdp,
+  };
+
   await updateDoc(roomRef, { answer });
 }
 
